@@ -76,13 +76,17 @@ export async function askClaude(apiKey: string, p: FeedbackPrompt, onText: (soFa
   // which is the case the SDK's browser switch exists for.
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 1 });
   let live = '';
-  try {
+
+  // `withFallback` lets another model answer if the first one declines. It is the
+  // preferred form; the plain form is only a second attempt if the API rejects that option.
+  const run = async (withFallback: boolean): Promise<AskResult> => {
+    live = '';
+    onText(live);
     const stream = client.beta.messages.stream(
       {
         model: CLAUDE_MODEL,
         max_tokens: 16000,
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
+        ...(withFallback ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}),
         output_config: { effort: 'medium' },
         system: p.system,
         messages: [{ role: 'user', content: p.user }],
@@ -108,13 +112,59 @@ export async function askClaude(apiKey: string, p: FeedbackPrompt, onText: (soFa
     text = (text || live).trim();
     if (!text) throw new AskError('other', 'Claude sent back an empty reply. Ask again when you’re ready.');
     return { text, truncated: msg.stop_reason === 'max_tokens' };
+  };
+
+  // What the API itself said was wrong, when it said anything. Shown as-is, because it is
+  // usually the one thing the person can act on ("credit balance is too low", say).
+  const detail = (e: unknown): string => {
+    const m = (e as { error?: { error?: { message?: unknown } } }).error?.error?.message;
+    return typeof m === 'string' && m ? ' Anthropic says: “' + m.slice(0, 240) + '”' : '';
+  };
+
+  try {
+    try {
+      return await run(true);
+    } catch (e) {
+      if (e instanceof Anthropic.BadRequestError && !signal.aborted) return await run(false);
+      throw e;
+    }
   } catch (e) {
     if (e instanceof AskError) throw e;
     if (e instanceof Anthropic.APIUserAbortError || signal.aborted) throw new AskError('cancelled', '');
-    if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) throw new AskError('auth', 'Anthropic didn’t accept the API key. Check it in Settings.');
+    if (e instanceof Anthropic.AuthenticationError) throw new AskError('auth', 'Anthropic didn’t accept the API key. Check it in Settings.');
+    if (e instanceof Anthropic.PermissionDeniedError) throw new AskError('auth', 'This API key isn’t allowed to do that.' + detail(e));
     if (e instanceof Anthropic.RateLimitError) throw new AskError('rate', 'Claude is busy or the key has reached a usage limit. Try again later.');
     if (e instanceof Anthropic.APIConnectionError) throw new AskError('network', 'No connection. Ask again when you’re online.');
-    if (e instanceof Anthropic.APIError) throw new AskError('other', e.status === 400 ? 'Anthropic rejected the request. The key’s account may not have access to this model.' : 'The reply was interrupted. Ask again when you’re ready.');
+    if (e instanceof Anthropic.BadRequestError || e instanceof Anthropic.NotFoundError) throw new AskError('other', 'Anthropic turned the request down.' + (detail(e) || ' The key’s account may not have access to ' + CLAUDE_MODEL + '.'));
+    if (e instanceof Anthropic.APIError && (e.status ?? 0) >= 500) throw new AskError('rate', 'Claude is having trouble right now. Try again in a little while.');
     throw new AskError('other', 'The reply was interrupted. Ask again when you’re ready.');
+  }
+}
+
+export interface KeyCheck {
+  /** 'unchecked' means Anthropic couldn't be reached, so nothing is known either way. */
+  state: 'ok' | 'rejected' | 'unchecked';
+  message: string;
+}
+
+/**
+ * Asks Anthropic whether a key is good and can use the model this app asks. Looking
+ * a model up costs nothing, so a mistyped key is caught when it's entered.
+ */
+export async function checkKey(apiKey: string): Promise<KeyCheck> {
+  const unchecked: KeyCheck = { state: 'unchecked', message: 'Saved, but the key couldn’t be checked just now. The first report you send will show whether it works.' };
+  try {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 0, timeout: 20_000 });
+    try {
+      await client.models.retrieve(CLAUDE_MODEL);
+      return { state: 'ok', message: '' };
+    } catch (e) {
+      if (e instanceof Anthropic.AuthenticationError) return { state: 'rejected', message: 'Anthropic didn’t accept that key. Check that all of it was copied.' };
+      if (e instanceof Anthropic.PermissionDeniedError || e instanceof Anthropic.NotFoundError) return { state: 'rejected', message: 'That key is valid, but its account can’t use ' + CLAUDE_MODEL + ', the model this app asks.' };
+      return unchecked;
+    }
+  } catch {
+    return unchecked;
   }
 }

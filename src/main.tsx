@@ -8,6 +8,7 @@ import './styles.css';
 import { render } from 'preact';
 import { App } from './app';
 import { applyTheme } from './lib/device';
+import { initFeedback } from './lib/feedback';
 import { loadStore } from './lib/store';
 import { initSync } from './lib/sync';
 import { initPwa } from './pwa';
@@ -21,4 +22,5 @@ render(<App />, document.getElementById('root')!);
 void loadStore().then(() => {
   initSync();
   initPwa();
+  initFeedback();
 });

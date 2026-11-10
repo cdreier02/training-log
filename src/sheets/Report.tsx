@@ -1,37 +1,14 @@
 import { useState } from 'preact/hooks';
 import { Confirm, Sheet } from '../components/common';
-import { AskError, askClaude, buildPrompt, promptText } from '../lib/claude';
+import { buildPrompt, promptText } from '../lib/claude';
 import { longDate, shortDate, todayStr, yearOf } from '../lib/dates';
 import { device } from '../lib/device';
+import { feedback, requestFeedback, stopFeedback } from '../lib/feedback';
 import { feelLine, fmtSets, paceLine, reportText, runLine, sessionMinutes } from '../lib/format';
 import { deltaLine, lastEntry, prFlags, prLine } from '../lib/logic';
-import { deleteSession, getConfig, getSessions, notify, sessionById, updateSession } from '../lib/store';
+import { deleteSession, getConfig, getSessions, sessionById, updateSession } from '../lib/store';
 import { copyText, shareText } from '../pwa';
 import { closeOverlay, openOverlay, toast } from '../ui';
-
-// The in-flight request lives outside the component so it survives re-renders and
-// keeps streaming if the sheet is covered by another one.
-const fb: { id: string; running: boolean; text: string; msg: string; ctl: AbortController | null } = { id: '', running: false, text: '', msg: '', ctl: null };
-
-function ask(id: string): void {
-  const s = sessionById(id), key = device().apiKey;
-  if (!s || !key || fb.running) return;
-  fb.id = id; fb.running = true; fb.text = ''; fb.msg = '';
-  fb.ctl = new AbortController();
-  notify();
-  askClaude(key, buildPrompt(s, getSessions(), getConfig()), (t) => { fb.text = t; notify(); }, fb.ctl.signal).then(
-    (res) => {
-      updateSession(id, (x) => { x.feedback = { text: res.text, at: todayStr(), ...(res.truncated ? { truncated: true } : {}) }; });
-      fb.running = false; fb.text = '';
-      notify();
-    },
-    (e: unknown) => {
-      fb.running = false; fb.text = '';
-      fb.msg = e instanceof AskError ? e.message : 'The reply was interrupted. Ask again when you’re ready.';
-      notify();
-    },
-  );
-}
 
 export function Report({ id }: { id: string }) {
   const s = sessionById(id);
@@ -41,8 +18,10 @@ export function Report({ id }: { id: string }) {
 
   const sessions = getSessions();
   const mins = sessionMinutes(s);
-  const hasKey = !!device().apiKey;
-  const running = fb.running && fb.id === id;
+  const d = device();
+  const hasKey = !!d.apiKey;
+  const running = feedback.running && feedback.id === id;
+  const waiting = !running && !s.feedback && d.pendingAsk === id; // asked with no signal; goes out by itself later
 
   const copyOut = async (text: string, done: string) => {
     if (await copyText(text)) { setFallback(''); toast(done); }
@@ -91,8 +70,8 @@ export function Report({ id }: { id: string }) {
         <h3>Feedback from Claude</h3>
         {running ? (
           <>
-            <p class="fb" aria-busy="true">{fb.text || 'Thinking…'}</p>
-            <button class="btn ghost" onClick={() => fb.ctl?.abort()}>Stop</button>
+            <p class="fb" aria-busy="true">{feedback.text || 'Claude is reading your session…'}</p>
+            <button class="btn ghost" onClick={() => stopFeedback(id)}>Stop</button>
           </>
         ) : (
           <>
@@ -102,11 +81,11 @@ export function Report({ id }: { id: string }) {
                 <p class="tiny muted">Saved {shortDate(s.feedback.at)}.{s.feedback.truncated ? ' The reply was cut short.' : ''}</p>
               </>
             ) : null}
-            {fb.id === id && fb.msg ? <p class="small" role="alert">{fb.msg}</p> : null}
+            {feedback.id === id && feedback.msg ? <p class="small" role="alert">{feedback.msg}</p> : waiting ? <p class="small" role="status">Claude will be asked as soon as you’re back online.</p> : null}
             {hasKey ? (
               <>
-                {!s.feedback ? <p class="small muted">Sends this report and your recent entries for the same lifts to Claude, then keeps the reply here.</p> : null}
-                <button class={'btn' + (s.feedback ? ' ghost' : '')} onClick={() => ask(id)}>{s.feedback ? 'Ask again' : 'Send report to Claude'}</button>
+                {!s.feedback && !waiting && !(feedback.id === id && feedback.msg) ? <p class="small muted">Sends this report and your recent entries for the same lifts to Claude, then keeps the reply here.</p> : null}
+                <button class={'btn' + (s.feedback ? ' ghost' : '')} onClick={() => requestFeedback(id)}>{s.feedback ? 'Ask again' : waiting || (feedback.id === id && feedback.msg) ? 'Try now' : 'Send report to Claude'}</button>
               </>
             ) : paste != null ? (
               <>
@@ -123,7 +102,7 @@ export function Report({ id }: { id: string }) {
                 <button class={'btn' + (s.feedback ? ' ghost' : '')} onClick={() => void askByHand()}>{s.feedback ? 'Ask again' : 'Ask Claude'}</button>
                 <div class="bar">
                   <button class="link" onClick={() => setPaste('')}>Paste Claude’s reply</button>
-                  <button class="link" onClick={() => openOverlay({ type: 'claude' })}>Skip the copying</button>
+                  <button class="link" onClick={() => openOverlay({ type: 'claude' })}>Have the app ask for you</button>
                 </div>
               </>
             )}
@@ -141,7 +120,7 @@ export function Report({ id }: { id: string }) {
         ) : null}
         <Confirm
           ask="Delete session" yes="Delete this session" no="Keep it"
-          onYes={() => { if (fb.id === id) fb.ctl?.abort(); deleteSession(id); closeOverlay(); toast('Session deleted.'); }}
+          onYes={() => { stopFeedback(id); deleteSession(id); closeOverlay(); toast('Session deleted.'); }}
           before={<button class="link" onClick={() => openOverlay({ type: 'edit', id })}>Edit session</button>}
         />
       </div>

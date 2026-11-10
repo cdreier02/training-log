@@ -4,7 +4,7 @@ import { useState } from 'preact/hooks';
 import { Confirm, Sheet } from '../components/common';
 import { exportCsv, exportJson, parseLog } from '../lib/backup';
 import type { Parsed } from '../lib/backup';
-import { CLAUDE_MODEL } from '../lib/claude';
+import { checkKey, CLAUDE_MODEL } from '../lib/claude';
 import { sincePhrase, todayStr } from '../lib/dates';
 import { device, setDevice } from '../lib/device';
 import { plural } from '../lib/format';
@@ -266,43 +266,57 @@ export function InstallSheet() {
 export function ClaudeSheet() {
   const d = device();
   const [key, setKey] = useState('');
-  const save = () => {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  // The key is checked with Anthropic before it is kept, so a typo shows up here
+  // and not at the gym.
+  const save = async () => {
     const k = key.trim();
-    if (!k) return;
+    if (!k || busy) return;
+    setBusy(true);
+    setErr('');
+    const r = await checkKey(k);
+    setBusy(false);
+    if (r.state === 'rejected') { setErr(r.message); return; }
     setDevice({ apiKey: k });
     setKey('');
     notify();
-    toast('Key saved on this device.');
+    toast(r.state === 'ok' ? 'Key works. Saved on this device.' : r.message);
   };
+
   return (
     <Sheet title="Claude feedback" sub="A second opinion on any session" backLabel="Back">
-      <p style="margin-top:14px">Every session report has an Ask Claude button. There are two ways it can work.</p>
-      <h3 class="gap">Copy and paste</h3>
+      <p style="margin-top:14px">Every session report has a button that asks Claude about that session. Nothing is sent to Claude until you tap it.</p>
+
+      <h3 class="gap">In the app, with an API key</h3>
       <p class="small muted" style="margin-top:4px">
-        The default, and it needs nothing set up. The button hands the report to the Claude app on a phone, or copies it on a computer. Paste Claude’s reply back into the report to keep it with the session.
-      </p>
-      <h3 class="gap">One tap, with an API key</h3>
-      <p class="small muted" style="margin-top:4px">
-        With an Anthropic API key, the report goes straight to Claude ({CLAUDE_MODEL}) and the reply appears in place. API use is billed to the key’s account, separately from a Claude subscription. Expect a few cents per reply.
+        With an Anthropic API key saved here, the button sends the report straight to Claude ({CLAUDE_MODEL}) and the reply appears in the report and stays with the session. API use is billed to the key’s account, separately from a Claude subscription. Expect a few cents per reply.
       </p>
       {d.apiKey ? (
         <>
           <p style="margin-top:12px" role="status">A key is saved on this device, ending in {d.apiKey.slice(-4)}.</p>
-          <Confirm ask="Remove the key" yes="Remove it" no="Keep it" onYes={() => { setDevice({ apiKey: '' }); notify(); toast('Key removed.'); }} />
+          <Confirm ask="Remove the key" yes="Remove it" no="Keep it" onYes={() => { setDevice({ apiKey: '', pendingAsk: '' }); notify(); toast('Key removed.'); }} />
         </>
       ) : (
         <>
+          {err ? <p class="note" role="alert" style="margin-top:12px;margin-bottom:0">{err}</p> : null}
           <div class="field">
             <label for="c-key">API key</label>
-            <input id="c-key" type="password" value={key} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="sk-ant-…" onInput={(e) => setKey(val(e))} />
-            <p class="tiny muted">Kept on this device only and sent only to Anthropic. It is never synced or put in a backup.</p>
+            <input id="c-key" type="password" value={key} autocomplete="off" autocapitalize="off" spellcheck={false} placeholder="sk-ant-…" onInput={(e) => { setKey(val(e)); setErr(''); }} />
+            <p class="tiny muted">Kept on this device only and sent only to Anthropic. It is never synced or put in a backup, so each device needs it entered once.</p>
           </div>
           <div class="gap-s stack-v">
-            <button class="btn" disabled={!key.trim()} onClick={save}>Save key</button>
+            <button class="btn" disabled={!key.trim() || busy} onClick={() => void save()}>{busy ? 'Checking the key…' : 'Save key'}</button>
             <a class="link" href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener noreferrer">Get a key from Anthropic</a>
           </div>
         </>
       )}
+
+      <h3 class="gap">Without a key</h3>
+      <p class="small muted" style="margin-top:4px">
+        The button hands the report to the Claude app on a phone, or copies it on a computer, for you to paste into a chat. Paste Claude’s reply back into the report to keep it with the session.
+      </p>
     </Sheet>
   );
 }

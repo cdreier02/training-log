@@ -16,12 +16,14 @@ export interface Device {
   dirty: boolean;
   /** Anthropic API key for in-app feedback. Optional and device-only. */
   apiKey: string;
+  /** A session the person asked Claude about with no connection; sent once back online. */
+  pendingAsk: string;
   installDismissed: boolean;
   lastBackupAt: number;
 }
 
 const KEY = 'tl:device';
-const DEFAULTS: Device = { theme: 'system', keepAwake: false, token: '', repo: '', lastSyncAt: 0, dirty: false, apiKey: '', installDismissed: false, lastBackupAt: 0 };
+const DEFAULTS: Device = { theme: 'system', keepAwake: false, token: '', repo: '', lastSyncAt: 0, dirty: false, apiKey: '', pendingAsk: '', installDismissed: false, lastBackupAt: 0 };
 
 let cache: Device | null = null;
 
