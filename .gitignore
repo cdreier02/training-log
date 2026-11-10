@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dev-dist/
+*.log
+.DS_Store
+
+# Personal data never goes in this repository. Backups and import files live here.
+private/
