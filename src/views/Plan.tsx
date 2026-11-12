@@ -1,17 +1,28 @@
 import { Banner, Confirm, Head, Icon } from '../components/common';
-import { liftSummary } from '../lib/logic';
+import { plural } from '../lib/format';
+import { liftSummary, moveInCircuit, moveItem, routineItems } from '../lib/logic';
 import { getConfig, saveConfig } from '../lib/store';
 import { KIND_LABEL } from '../lib/types';
+import type { LiftDef, Routine } from '../lib/types';
 import { openOverlay } from '../ui';
 
-function move(rt: string, id: string, dir: -1 | 1): void {
+const inRoutine = (rt: string, fn: (r: Routine, lifts: Record<string, LiftDef>) => void) =>
   saveConfig((c) => {
     const r = c.routines.find((x) => x.id === rt);
-    if (!r) return;
-    const i = r.liftIds.indexOf(id), j = i + dir;
-    if (i < 0 || j < 0 || j >= r.liftIds.length) return;
-    r.liftIds.splice(j, 0, r.liftIds.splice(i, 1)[0]);
+    if (r) fn(r, c.lifts);
   });
+
+/** One lift's row, with arrows that move it within whatever list it's in. */
+function LiftLine(p: { rt: string; d: LiftDef; sub: string; first: boolean; last: boolean; onMove: (dir: -1 | 1) => void }) {
+  return (
+    <div class="prow">
+      <button class="row" onClick={() => openOverlay({ type: 'lift', rt: p.rt, id: p.d.id })}>
+        <span class="n">{p.d.name}<span class="sub">{p.sub}</span></span>
+      </button>
+      <button class="sq sm" disabled={p.first} aria-label={'Move ' + p.d.name + ' up'} onClick={() => p.onMove(-1)}>{Icon.up()}</button>
+      <button class="sq sm" disabled={p.last} aria-label={'Move ' + p.d.name + ' down'} onClick={() => p.onMove(1)}>{Icon.down()}</button>
+    </div>
+  );
 }
 
 export function Plan() {
@@ -22,7 +33,7 @@ export function Plan() {
       <Head date="Your lifts and the weights your gym has" title="Plan" />
       {!c.routines.length ? <p>A routine is a list of lifts you do together, like an upper body day. Start with one.</p> : null}
       {c.routines.map((r) => {
-        const ids = r.liftIds.filter((id) => c.lifts[id]);
+        const items = routineItems(r, c.lifts);
         return (
           <section class="rt" key={r.id}>
             <div class="rth">
@@ -30,17 +41,40 @@ export function Plan() {
               <button class="link" onClick={() => openOverlay({ type: 'routine', id: r.id })}>Rename</button>
             </div>
             <ul class="rows">
-              {ids.map((id, i) => {
-                const d = c.lifts[id];
+              {items.map((it, i) => {
+                const first = i === 0, last = i === items.length - 1;
+                if (it.kind === 'lift') {
+                  const d = c.lifts[it.id];
+                  return (
+                    <li key={it.id}>
+                      <LiftLine rt={r.id} d={d} sub={liftSummary(d, KIND_LABEL[d.kind])} first={first} last={last} onMove={(dir) => inRoutine(r.id, (x, lifts) => moveItem(x, lifts, i, dir))} />
+                    </li>
+                  );
+                }
+                const k = it.c;
                 return (
-                  <li key={id}>
+                  <li key={k.id} class="circ">
                     <div class="prow">
-                      <button class="row" onClick={() => openOverlay({ type: 'lift', rt: r.id, id })}>
-                        <span class="n">{d.name}<span class="sub">{liftSummary(d, KIND_LABEL[d.kind])}</span></span>
+                      <button class="row" onClick={() => openOverlay({ type: 'circuit', rt: r.id, id: k.id })}>
+                        <span class="n"><span class="big">{k.name}</span><span class="sub">Circuit. {plural(k.rounds, 'round')} of {plural(k.liftIds.length, 'lift')}.</span></span>
                       </button>
-                      <button class="sq sm" disabled={i === 0} aria-label={'Move ' + d.name + ' up'} onClick={() => move(r.id, id, -1)}>{Icon.up()}</button>
-                      <button class="sq sm" disabled={i === ids.length - 1} aria-label={'Move ' + d.name + ' down'} onClick={() => move(r.id, id, 1)}>{Icon.down()}</button>
+                      <button class="sq sm" disabled={first} aria-label={'Move ' + k.name + ' up'} onClick={() => inRoutine(r.id, (x, lifts) => moveItem(x, lifts, i, -1))}>{Icon.up()}</button>
+                      <button class="sq sm" disabled={last} aria-label={'Move ' + k.name + ' down'} onClick={() => inRoutine(r.id, (x, lifts) => moveItem(x, lifts, i, 1))}>{Icon.down()}</button>
                     </div>
+                    <ul class="rows">
+                      {k.liftIds.map((id, j) => {
+                        const d = c.lifts[id];
+                        return (
+                          <li key={id}>
+                            <LiftLine
+                              rt={r.id} d={d} first={j === 0} last={j === k.liftIds.length - 1}
+                              sub={KIND_LABEL[d.kind] + ', ' + (d.reps || 10) + (d.repUnit === 'sec' ? ' sec' : '') + ' each round'}
+                              onMove={(dir) => inRoutine(r.id, (x, lifts) => moveInCircuit(x, lifts, k.id, id, dir))}
+                            />
+                          </li>
+                        );
+                      })}
+                    </ul>
                   </li>
                 );
               })}
@@ -49,7 +83,12 @@ export function Plan() {
               <Confirm
                 ask="Delete routine" yes={'Delete ' + r.name} no="Keep it"
                 onYes={() => saveConfig((x) => { x.routines = x.routines.filter((y) => y.id !== r.id); })}
-                before={<button class="link" onClick={() => openOverlay({ type: 'lift', rt: r.id, id: '' })}>Add a lift</button>}
+                before={
+                  <>
+                    <button class="link" onClick={() => openOverlay({ type: 'lift', rt: r.id, id: '' })}>Add a lift</button>
+                    <button class="link" onClick={() => openOverlay({ type: 'circuit', rt: r.id, id: '' })}>Add a circuit</button>
+                  </>
+                }
               />
             </div>
           </section>

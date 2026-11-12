@@ -140,7 +140,7 @@ export function sessionMinutes(s: Pick<SessionDoc, 'startedAt' | 'endedAt'>): nu
 export function reportText(s: SessionDoc): string {
   const lines = [(s.routineName || 'Session') + ', ' + longDate(s.date) + ', ' + yearOf(s.date)];
   for (const l of s.lifts || []) {
-    let t = l.name + ': ' + fmtSets(l) + (l.kind === 'dumbbell' ? ' (per hand)' : '') + '.';
+    let t = l.name + (l.circuit ? ' (circuit: ' + l.circuit + ')' : '') + ': ' + fmtSets(l) + (l.kind === 'dumbbell' ? ' (per hand)' : '') + '.';
     const f = feelLine(l.sets);
     if (f) t += ' ' + f;
     if (l.note) t += ' Note: ' + l.note;

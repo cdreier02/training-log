@@ -6,7 +6,7 @@ import { isDateStr, toDate } from './dates';
 import { runLine, unitD, unitW } from './format';
 import { serializeDocs } from './merge';
 import { DEFAULT_PREFS } from './types';
-import type { ActiveDoc, ActiveLift, ConfigDoc, Doc, DocMap, Feedback, Kind, LiftDef, PlanSet, Prefs, Routine, Run, SessionDoc, SessionLift, SetRec } from './types';
+import type { ActiveCircuit, ActiveDoc, ActiveLift, Circuit, ConfigDoc, Doc, DocMap, Feedback, Kind, LiftDef, PlanSet, Prefs, Routine, Run, SessionDoc, SessionLift, SetRec } from './types';
 
 type Raw = Record<string, unknown>;
 const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -40,7 +40,29 @@ function normLift(v: unknown): SessionLift | null {
   const id = str(v.id, 80);
   if (!id) return null;
   const sets = (Array.isArray(v.sets) ? v.sets : []).map(normSet).filter((x): x is SetRec => !!x).slice(0, 40);
-  return { id, name: str(v.name, 60, 'Lift') || 'Lift', kind: kindOf(v.kind), repUnit: v.repUnit === 'sec' ? 'sec' : 'reps', sets, note: str(v.note, 300) };
+  const lift: SessionLift = { id, name: str(v.name, 60, 'Lift') || 'Lift', kind: kindOf(v.kind), repUnit: v.repUnit === 'sec' ? 'sec' : 'reps', sets, note: str(v.note, 300) };
+  const circuit = str(v.circuit, 60);
+  if (circuit) lift.circuit = circuit;
+  return lift;
+}
+
+/** Circuits as stored on a routine: each needs a name, rounds, and at least two of the routine's lifts. */
+function normCircuits(v: unknown, liftIds: string[]): Circuit[] {
+  const out: Circuit[] = [];
+  const taken = new Set<string>(), ids = new Set<string>();
+  for (const c of Array.isArray(v) ? v : []) {
+    if (!isObj(c)) continue;
+    const id = str(c.id, 80);
+    if (!id || ids.has(id)) continue;
+    const members = [...new Set((Array.isArray(c.liftIds) ? c.liftIds : []).filter((x): x is string => typeof x === 'string'))].filter((x) => liftIds.includes(x) && !taken.has(x));
+    if (members.length < 2) continue;
+    ids.add(id);
+    for (const m of members) taken.add(m);
+    const circuit: Circuit = { id, name: str(c.name, 60, 'Circuit') || 'Circuit', rounds: int(c.rounds, 1, 12, 3), liftIds: members };
+    if (c.rest != null && fin(c.rest) != null) circuit.rest = int(c.rest, 0, 900, 90);
+    out.push(circuit);
+  }
+  return out;
 }
 
 function normActiveLift(v: unknown): ActiveLift | null {
@@ -51,7 +73,8 @@ function normActiveLift(v: unknown): ActiveLift | null {
     .map((p) => ({ w: nonNeg(p.w), r: int(p.r, 0, 999, 10) }))
     .slice(0, 12);
   if (!plan.length) plan.push({ w: l.sets[0]?.w ?? 0, r: 10 });
-  return { ...l, plan, skipped: v.skipped === true };
+  const cid = str(v.cid, 80);
+  return { ...l, plan, skipped: v.skipped === true, ...(cid ? { cid } : {}) };
 }
 
 function normRun(v: unknown): Run | null {
@@ -124,8 +147,11 @@ export function normalizeDoc(raw: unknown, idHint = ''): Doc | null {
       const id = str(r.id, 80);
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      const ids = (Array.isArray(r.liftIds) ? r.liftIds : []).filter((x): x is string => typeof x === 'string');
-      routines.push({ id, name: str(r.name, 60, 'Routine') || 'Routine', liftIds: [...new Set(ids)] });
+      const ids = [...new Set((Array.isArray(r.liftIds) ? r.liftIds : []).filter((x): x is string => typeof x === 'string'))];
+      const routine: Routine = { id, name: str(r.name, 60, 'Routine') || 'Routine', liftIds: ids };
+      const circuits = normCircuits(r.circuits, ids);
+      if (circuits.length) routine.circuits = circuits;
+      routines.push(routine);
     }
     const c: ConfigDoc = { id: 'config', type: 'config', updatedAt: stamp(raw.updatedAt, 1), routines, lifts, prefs: normPrefs(raw.prefs) };
     return c;
@@ -143,6 +169,18 @@ export function normalizeDoc(raw: unknown, idHint = ''): Doc | null {
     };
     const ls = fin(raw.lastSetAt);
     if (ls != null && ls > 0) a.lastSetAt = Math.round(ls);
+    // Circuits in the session, and only the ones some lift actually points at.
+    const circuits: ActiveCircuit[] = [];
+    for (const c of Array.isArray(raw.circuits) ? raw.circuits : []) {
+      if (!isObj(c)) continue;
+      const cid = str(c.id, 80);
+      if (!cid || circuits.some((x) => x.id === cid) || !lifts.some((l) => l.cid === cid)) continue;
+      const circuit: ActiveCircuit = { id: cid, name: str(c.name, 60, 'Circuit') || 'Circuit', rounds: int(c.rounds, 1, 40, 3) };
+      if (c.rest != null && fin(c.rest) != null) circuit.rest = int(c.rest, 0, 900, 90);
+      circuits.push(circuit);
+    }
+    for (const l of lifts) if (l.cid && !circuits.some((x) => x.id === l.cid)) delete l.cid;
+    if (circuits.length) a.circuits = circuits;
     return a;
   }
 

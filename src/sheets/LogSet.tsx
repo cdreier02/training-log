@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Choice, Sheet, Stepper } from '../components/common';
 import { freeStep, num, unitW, unitWLong } from '../lib/format';
-import { lastEntry, liftDone, splitLoad } from '../lib/logic';
+import { lastEntry, pinAfter, splitLoad } from '../lib/logic';
 import { getActive, getConfig, getSessions, sessionById, updateActive, updateSession } from '../lib/store';
-import type { Feel, LiftDef, SessionLift, SetRec } from '../lib/types';
+import type { ActiveLift, Feel, LiftDef, SessionLift, SetRec } from '../lib/types';
 import { closeOverlay } from '../ui';
 import type { Target } from '../ui';
 
@@ -59,7 +59,8 @@ export function LogSet({ target, li, si }: { target: Target; li: number; si: num
   const sessions = getSessions();
   const last = target.kind === 'active' ? lastEntry(sessions, l.id) : lastEntry(sessions, l.id, sessionById(target.id) ?? undefined);
   const lastSet = last ? last.l.sets[Math.min(si, last.l.sets.length - 1)] : null;
-  let sub = 'Set ' + (si + 1) + ' of ' + Math.max(plan.length, l.sets.length + (edit ? 0 : 1)) + '.';
+  const inCircuit = target.kind === 'active' && !!(l as ActiveLift).cid;
+  let sub = (inCircuit ? 'Round ' : 'Set ') + (si + 1) + ' of ' + Math.max(plan.length, l.sets.length + (edit ? 0 : 1)) + '.';
   if (lastSet && lastSet.r != null) sub += ' Last time you got ' + lastSet.r + (body ? (l.repUnit === 'sec' ? ' seconds' : '') : ' at ' + num(lastSet.w)) + '.';
 
   const stepR = l.repUnit === 'sec' ? 5 : 1;
@@ -84,7 +85,7 @@ export function LogSet({ target, li, si }: { target: Target; li: number; si: num
         }
         x.note = note;
         x.skipped = false;
-        a.cur = liftDone(x) ? null : li;
+        a.cur = pinAfter(a, li); // in a circuit this moves on to the next lift in the round
       });
     } else {
       updateSession(target.id, (s) => {

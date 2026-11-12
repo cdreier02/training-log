@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { Banner, Confirm, Head } from '../components/common';
 import { clock, longDate, shortDate, todayStr, weekStart } from '../lib/dates';
 import { fmtPlan, fmtSets, isBody, num, plural, runLine } from '../lib/format';
-import { buildSession, curIdx, lastEntry, liftDone, newActive, nudge, upNext } from '../lib/logic';
+import { buildSession, circuitProgress, circuitStep, lastEntry, liftDone, newActive, nextStep, nudge, pinAfter, upNext } from '../lib/logic';
 import { finishActive, getActive, getConfig, getSessions, isEmpty, setActive, updateActive } from '../lib/store';
 import type { ActiveDoc, ActiveLift, LiftDef } from '../lib/types';
 import { openOverlay, setTab } from '../ui';
@@ -83,9 +83,13 @@ export function Today() {
 }
 
 function Active({ A }: { A: ActiveDoc }) {
-  const ci = curIdx(A), doneN = A.lifts.filter(liftDone).length;
+  const step = nextStep(A), ci = step ? step.li : -1, doneN = A.lifts.filter(liftDone).length;
   const any = !!A.run || A.lifts.some((l) => l.sets.length);
   const stale = A.date !== todayStr();
+  // When the open lift is part of a circuit, the card shows the whole circuit.
+  const cid = ci !== -1 ? A.lifts[ci].cid : undefined;
+  const inCard = (i: number) => (cid ? A.lifts[i].cid === cid : i === ci);
+  const cardFrom = A.lifts.findIndex((_, i) => inCard(i));
 
   const finish = () => {
     const s = buildSession(A);
@@ -94,13 +98,20 @@ function Active({ A }: { A: ActiveDoc }) {
     openOverlay({ type: 'report', id: s.id });
   };
 
-  // The lifts before and after the open one are two separate lists, so the card sits between them.
-  const rows = (from: number, to: number) =>
-    to > from ? (
-      <ul class="rows">
-        {A.lifts.slice(from, to).map((l, k) => <li key={l.id + (from + k)}><LiftRow l={l} i={from + k} /></li>)}
-      </ul>
-    ) : null;
+  // The lifts before and after the open card are two separate lists, so the card sits between
+  // them. Lifts that belong to a circuit get its name above the first of them.
+  const rows = (keep: (i: number) => boolean) => {
+    const out = [];
+    let label = '';
+    for (let i = 0; i < A.lifts.length; i++) {
+      if (!keep(i) || inCard(i)) continue;
+      const l = A.lifts[i], c = l.cid ? A.circuits?.find((x) => x.id === l.cid) : undefined;
+      if (c && c.id !== label) out.push(<li key={'c' + c.id} class="clab">{c.name} · {plural(c.rounds, 'round')}</li>);
+      label = c ? c.id : '';
+      out.push(<li key={l.id + i}><LiftRow l={l} i={i} /></li>);
+    }
+    return out.length ? <ul class="rows">{out}</ul> : null;
+  };
 
   return (
     <>
@@ -111,9 +122,9 @@ function Active({ A }: { A: ActiveDoc }) {
       </div>
       {stale ? <p class="note" role="status">This session was started on {longDate(A.date)}. Finishing it files it under that day.</p> : null}
 
-      {rows(0, ci === -1 ? A.lifts.length : ci)}
-      {ci !== -1 ? <CurLift A={A} l={A.lifts[ci]} i={ci} /> : null}
-      {ci !== -1 ? rows(ci + 1, A.lifts.length) : null}
+      {rows((i) => ci === -1 || i < cardFrom)}
+      {ci === -1 ? null : cid ? <CircuitCard A={A} cid={cid} now={circuitStep(A, cid)?.li ?? -1} /> : <CurLift A={A} l={A.lifts[ci]} i={ci} />}
+      {ci !== -1 ? rows((i) => i > cardFrom) : null}
 
       <ul class="rows top">
         <li>
@@ -216,6 +227,93 @@ function CurLift({ A, l, i }: { A: ActiveDoc; l: ActiveLift; i: number }) {
           <button class="link" onClick={() => updateActive((a) => { a.lifts[i].skipped = true; a.cur = null; })}>Skip this lift</button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * The card for a circuit: every lift in it, for the round being done, with the one
+ * that's up next marked. Rest is between rounds, so the timer only shows once a round
+ * has just ended.
+ */
+function CircuitCard({ A, cid, now }: { A: ActiveDoc; cid: string; now: number }) {
+  const cfg = getConfig(), sessions = getSessions();
+  const c = A.circuits?.find((x) => x.id === cid);
+  const members = A.lifts.map((l, i) => ({ l, i })).filter((x) => x.l.cid === cid);
+  const live = members.filter((x) => !x.l.skipped);
+  const { done: roundsDone, rounds } = circuitProgress(A, cid);
+  const finished = now === -1;
+  const round = finished ? rounds - 1 : roundsDone; // the round on show, counting from 0
+  const cur = finished ? null : A.lifts[now];
+  const d = cur ? (cfg.lifts[cur.id] as LiftDef | undefined) : undefined;
+  const last = cur ? lastEntry(sessions, cur.id) : null;
+  const rest = c?.rest != null ? c.rest : cfg.prefs.restSec;
+  const roundJustEnded = !finished && roundsDone > 0 && live.length > 0 && live[0].i === now && live.every((x) => x.l.sets.length === roundsDone);
+  const log = (li: number, si: number) => openOverlay({ type: 'log', target: { kind: 'active' }, li, si });
+
+  const addRound = () => updateActive((a) => {
+    for (const l of a.lifts) if (l.cid === cid && !l.skipped) l.plan.push({ ...l.plan[l.plan.length - 1] });
+    const k = a.circuits?.find((x) => x.id === cid);
+    if (k) k.rounds += 1;
+    a.cur = a.lifts.findIndex((l) => l.cid === cid);
+  });
+
+  return (
+    <section class="cur" aria-label={'Circuit: ' + (c?.name ?? 'Circuit')}>
+      <div class="curh">
+        <h2>{c?.name ?? 'Circuit'}</h2>
+        <p class="small muted nowrap">{finished ? 'Done' : 'Round ' + (round + 1) + ' of ' + rounds}</p>
+      </div>
+      <div class="segs" aria-hidden="true" style="margin-bottom:0">
+        {Array.from({ length: rounds }, (_, k) => <i key={k} class={k < roundsDone ? 'd' : k === roundsDone && !finished ? 'c' : ''} />)}
+      </div>
+      <ol class="crows">
+        {members.map(({ l, i }) => {
+          const s = l.sets[round], p = l.plan[round] || l.plan[l.plan.length - 1];
+          const shown = s || p;
+          const body = isBody(l.kind, [shown]);
+          const r = s ? (s.r == null ? '?' : s.r) : p.r;
+          const state = l.skipped ? 'skip' : s ? 'done' : i === now ? 'now' : '';
+          const label = l.skipped ? 'Skipped. Tap to do it' : s ? 'Done' : i === now ? 'Now' : 'Next';
+          return (
+            <li key={l.id + i}>
+              <button
+                class={'crow ' + state}
+                aria-label={l.skipped ? 'Do ' + l.name + ' after all' : (s ? 'Edit ' : 'Log ') + l.name + ', round ' + (round + 1)}
+                onClick={() => (l.skipped ? updateActive((a) => { a.lifts[i].skipped = false; a.cur = i; }) : log(i, s ? round : l.sets.length))}
+              >
+                <span class="n">{l.name}</span>
+                <span class="v">
+                  <span class="w">{body ? r + (l.repUnit === 'sec' ? ' sec' : '') : num(shown.w) + ' × ' + r}</span>
+                  <span class="s">{label}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      {roundJustEnded && A.lastSetAt && rest > 0 ? <RestTimer key={A.lastSetAt} since={A.lastSetAt} target={rest} /> : null}
+      {cur && d && d.cue ? (
+        <div class="cue">
+          <p>{d.cue}</p>
+          <p class="tiny muted">Your cue for {cur.name}</p>
+        </div>
+      ) : null}
+      {cur ? (
+        <p class="small muted">
+          {last ? cur.name + ', ' + shortDate(last.s.date) + ': ' + fmtSets(last.l) + '.' + (last.l.note ? ' ' + last.l.note : '') : 'First time logging ' + cur.name + '.'}
+        </p>
+      ) : null}
+      {cur ? (
+        <>
+          <button class="btn" onClick={() => log(now, cur.sets.length)}>Log {cur.name}</button>
+          <div class="bar">
+            <button class="link" onClick={() => updateActive((a) => { a.lifts[now].skipped = true; a.cur = pinAfter(a, now); })}>Skip {cur.name}</button>
+          </div>
+        </>
+      ) : (
+        <button class="btn ghost" onClick={addRound}>Add a round</button>
+      )}
     </section>
   );
 }

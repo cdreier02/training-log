@@ -15,6 +15,7 @@ export type Overlay =
   | { type: 'run'; target: Target | { kind: 'solo' } }
   | { type: 'addlift'; target: Target }
   | { type: 'lift'; rt: string; id: string }
+  | { type: 'circuit'; rt: string; id: string }
   | { type: 'routine'; id: string }
   | { type: 'report'; id: string }
   | { type: 'edit'; id: string }

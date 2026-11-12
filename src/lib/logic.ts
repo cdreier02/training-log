@@ -3,7 +3,7 @@
 
 import { addDays, weekStart } from './dates';
 import { fmtW, freeStep, isBody, plural, sumR, topR, topW, wPhrase } from './format';
-import type { ActiveDoc, ActiveLift, ConfigDoc, LiftDef, PlanSet, Routine, SessionDoc, SessionLift } from './types';
+import type { ActiveCircuit, ActiveDoc, ActiveLift, Circuit, ConfigDoc, LiftDef, PlanSet, Routine, SessionDoc, SessionLift } from './types';
 
 export function uid(prefix: string): string {
   return prefix + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
@@ -45,10 +45,13 @@ export function lastEntry(sorted: SessionDoc[], liftId: string, before?: Session
   return null;
 }
 
-/** Today's plan for a lift: last time's weights at the target count. */
-export function planFor(L: LiftDef, sorted: SessionDoc[]): PlanSet[] {
+/**
+ * Today's plan for a lift: last time's weights at the target count. `sets` overrides
+ * the lift's own number of sets, which is how a circuit's rounds take over.
+ */
+export function planFor(L: LiftDef, sorted: SessionDoc[], sets?: number): PlanSet[] {
   const last = lastEntry(sorted, L.id);
-  const n = Math.max(1, +L.sets || 3), reps = +L.reps || 10;
+  const n = Math.max(1, sets ?? (+L.sets || 3)), reps = +L.reps || 10;
   const out: PlanSet[] = [];
   for (let i = 0; i < n; i++) {
     let w = 0;
@@ -61,28 +64,151 @@ export function planFor(L: LiftDef, sorted: SessionDoc[]): PlanSet[] {
   return out;
 }
 
-export function activeLift(L: LiftDef, sorted: SessionDoc[]): ActiveLift {
-  return { id: L.id, name: L.name, kind: L.kind, repUnit: L.repUnit || 'reps', plan: planFor(L, sorted), sets: [], note: '', skipped: false };
+export function activeLift(L: LiftDef, sorted: SessionDoc[], sets?: number): ActiveLift {
+  return { id: L.id, name: L.name, kind: L.kind, repUnit: L.repUnit || 'reps', plan: planFor(L, sorted, sets), sets: [], note: '', skipped: false };
 }
+
+/* ---------- circuits in the plan ---------- */
+
+/** A routine as the things done one after another: single lifts, and whole circuits. */
+export type RoutineItem = { kind: 'lift'; id: string } | { kind: 'circuit'; c: Circuit };
+
+/**
+ * Splits a routine into its items, in order. A circuit sits where its first lift
+ * is. Lifts that no longer exist are left out, and a circuit that is down to fewer
+ * than two lifts stops being one: what's left of it is an ordinary lift.
+ */
+export function routineItems(r: Routine, lifts: Record<string, LiftDef>): RoutineItem[] {
+  const inRoutine = new Set(r.liftIds.filter((id) => lifts[id]));
+  const owner = new Map<string, Circuit>();
+  for (const c of r.circuits ?? []) {
+    const ids = [...new Set(c.liftIds)].filter((id) => inRoutine.has(id) && !owner.has(id));
+    if (ids.length < 2) continue;
+    const kept = { ...c, liftIds: ids };
+    for (const id of ids) owner.set(id, kept);
+  }
+  const out: RoutineItem[] = [];
+  const placed = new Set<string>();
+  for (const id of r.liftIds) {
+    if (!inRoutine.has(id) || placed.has(id)) continue;
+    const c = owner.get(id);
+    if (!c) { out.push({ kind: 'lift', id }); placed.add(id); continue; }
+    out.push({ kind: 'circuit', c });
+    for (const m of c.liftIds) placed.add(m);
+  }
+  return out;
+}
+
+/** Writes items back into a routine: one flat list of lifts with each circuit's lifts together. */
+function setItems(r: Routine, items: RoutineItem[], lifts: Record<string, LiftDef>): void {
+  const missing = r.liftIds.filter((id) => !lifts[id]); // kept as they were; they show up again if the lift comes back
+  r.liftIds = [...items.flatMap((it) => (it.kind === 'lift' ? [it.id] : it.c.liftIds)), ...missing];
+  const circuits = items.flatMap((it) => (it.kind === 'circuit' ? [it.c] : []));
+  if (circuits.length) r.circuits = circuits;
+  else delete r.circuits;
+}
+
+/** Puts a routine back in order after an edit: circuits contiguous, empty ones gone. */
+export function tidyRoutine(r: Routine, lifts: Record<string, LiftDef>): void {
+  setItems(r, routineItems(r, lifts), lifts);
+}
+
+/** Moves a lift or a whole circuit one place up (-1) or down (1) in the routine. */
+export function moveItem(r: Routine, lifts: Record<string, LiftDef>, index: number, dir: -1 | 1): void {
+  const items = routineItems(r, lifts), j = index + dir;
+  if (index < 0 || j < 0 || index >= items.length || j >= items.length) return;
+  items.splice(j, 0, items.splice(index, 1)[0]);
+  setItems(r, items, lifts);
+}
+
+/** Moves a lift one place up or down within its circuit. */
+export function moveInCircuit(r: Routine, lifts: Record<string, LiftDef>, circuitId: string, liftId: string, dir: -1 | 1): void {
+  const items = routineItems(r, lifts);
+  for (const it of items) {
+    if (it.kind !== 'circuit' || it.c.id !== circuitId) continue;
+    const i = it.c.liftIds.indexOf(liftId), j = i + dir;
+    if (i < 0 || j < 0 || j >= it.c.liftIds.length) return;
+    it.c.liftIds.splice(j, 0, it.c.liftIds.splice(i, 1)[0]);
+  }
+  setItems(r, items, lifts);
+}
+
+/* ---------- a session under way ---------- */
 
 export function newActive(r: Routine, config: ConfigDoc, sorted: SessionDoc[], date: string, now = Date.now()): ActiveDoc {
   const lifts: ActiveLift[] = [];
-  for (const id of r.liftIds) {
-    const L = config.lifts[id];
-    if (L) lifts.push(activeLift(L, sorted));
+  const circuits: ActiveCircuit[] = [];
+  for (const item of routineItems(r, config.lifts)) {
+    if (item.kind === 'lift') { lifts.push(activeLift(config.lifts[item.id], sorted)); continue; }
+    const c = item.c, rounds = Math.max(1, c.rounds || 3);
+    circuits.push({ id: c.id, name: c.name, rounds, ...(c.rest != null ? { rest: c.rest } : {}) });
+    for (const id of c.liftIds) lifts.push({ ...activeLift(config.lifts[id], sorted, rounds), cid: c.id });
   }
-  return { id: 'active', type: 'active', updatedAt: now, date, startedAt: new Date(now).toISOString(), routineId: r.id, routineName: r.name, cur: null, lifts, run: null };
+  const A: ActiveDoc = { id: 'active', type: 'active', updatedAt: now, date, startedAt: new Date(now).toISOString(), routineId: r.id, routineName: r.name, cur: null, lifts, run: null };
+  if (circuits.length) A.circuits = circuits;
+  return A;
 }
 
 export function liftDone(l: ActiveLift): boolean {
   return l.skipped || l.sets.length >= l.plan.length;
 }
 
-/** Which lift the session screen should open: the pinned one, else the first unfinished. */
+/** The set to do next: which lift, and which of its sets. */
+export interface Step {
+  li: number;
+  si: number;
+}
+
+/**
+ * The next set in a circuit, or null when every round is done. Sets come up round by
+ * round: each lift's first set in order, then each lift's second, and so on. A lift
+ * that was skipped drops out of the rounds that are left.
+ */
+export function circuitStep(A: ActiveDoc, cid: string): Step | null {
+  const members = A.lifts.map((l, i) => ({ l, i })).filter((x) => x.l.cid === cid && !x.l.skipped);
+  const rounds = Math.max(0, ...members.map((x) => x.l.plan.length));
+  for (let r = 0; r < rounds; r++) for (const { l, i } of members) if (l.sets.length <= r && l.plan.length > r) return { li: i, si: l.sets.length };
+  return null;
+}
+
+/** How far a circuit has got: rounds finished by every lift still in it, out of how many. */
+export function circuitProgress(A: ActiveDoc, cid: string): { done: number; rounds: number } {
+  const all = A.lifts.filter((l) => l.cid === cid), live = all.filter((l) => !l.skipped);
+  const rounds = Math.max(1, ...(live.length ? live : all).map((l) => l.plan.length));
+  return { done: live.length ? Math.min(rounds, ...live.map((l) => l.sets.length)) : rounds, rounds };
+}
+
+/**
+ * What the session screen should open on. If the person picked a lift, that one (or,
+ * if it's in a circuit, wherever that circuit is up to). Otherwise the first thing
+ * in the routine that isn't finished.
+ */
+export function nextStep(A: ActiveDoc): Step | null {
+  const pinned = A.cur != null ? A.lifts[A.cur] : undefined;
+  if (pinned) return (pinned.cid ? circuitStep(A, pinned.cid) : null) ?? { li: A.cur as number, si: pinned.sets.length };
+  const seen = new Set<string>();
+  for (let i = 0; i < A.lifts.length; i++) {
+    const l = A.lifts[i];
+    if (!l.cid) { if (!liftDone(l)) return { li: i, si: l.sets.length }; continue; }
+    if (seen.has(l.cid)) continue;
+    seen.add(l.cid);
+    const s = circuitStep(A, l.cid);
+    if (s) return s;
+  }
+  return null;
+}
+
+/** Which lift the session screen should open: -1 once everything is done. */
 export function curIdx(A: ActiveDoc): number {
-  if (A.cur != null && A.lifts[A.cur]) return A.cur;
-  for (let i = 0; i < A.lifts.length; i++) if (!liftDone(A.lifts[i])) return i;
-  return -1;
+  return nextStep(A)?.li ?? -1;
+}
+
+/** Where the "current lift" pointer should rest after a change to this lift. */
+export function pinAfter(A: ActiveDoc, li: number): number | null {
+  const l = A.lifts[li];
+  if (!l) return null;
+  if (l.cid) return circuitStep(A, l.cid) ? li : null; // stay in the circuit until its rounds are done
+  return liftDone(l) ? null : li;
 }
 
 export function buildSession(A: ActiveDoc, now = Date.now()): SessionDoc {
@@ -95,7 +221,10 @@ export function buildSession(A: ActiveDoc, now = Date.now()): SessionDoc {
     endedAt: new Date(now).toISOString(),
     routineId: A.routineId,
     routineName: A.routineName,
-    lifts: A.lifts.filter((l) => l.sets.length).map((l) => ({ id: l.id, name: l.name, kind: l.kind, repUnit: l.repUnit, sets: l.sets, note: l.note || '' })),
+    lifts: A.lifts.filter((l) => l.sets.length).map((l) => {
+      const c = l.cid ? A.circuits?.find((x) => x.id === l.cid) : undefined;
+      return { id: l.id, name: l.name, kind: l.kind, repUnit: l.repUnit, sets: l.sets, note: l.note || '', ...(c ? { circuit: c.name } : {}) };
+    }),
   };
   if (A.run) s.run = A.run;
   return s;

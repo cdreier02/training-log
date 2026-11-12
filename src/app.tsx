@@ -2,6 +2,7 @@ import { useLayoutEffect, useReducer, useRef } from 'preact/hooks';
 import { longDate, todayStr } from './lib/dates';
 import { status, subscribe } from './lib/store';
 import { sync } from './lib/sync';
+import { CircuitSheet } from './sheets/Circuit';
 import { LogSet } from './sheets/LogSet';
 import { Report } from './sheets/Report';
 import { SessionEdit } from './sheets/SessionEdit';
@@ -29,6 +30,7 @@ function OverlayView({ o }: { o: Overlay }) {
     case 'run': return <RunSheet target={o.target} />;
     case 'addlift': return <AddLift target={o.target} />;
     case 'lift': return <LiftSheet rt={o.rt} id={o.id} />;
+    case 'circuit': return <CircuitSheet rt={o.rt} id={o.id} />;
     case 'routine': return <RoutineSheet id={o.id} />;
     case 'report': return <Report id={o.id} />;
     case 'edit': return <SessionEdit id={o.id} />;

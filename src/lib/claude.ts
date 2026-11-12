@@ -23,6 +23,7 @@ export function buildPrompt(s: SessionDoc, sessions: SessionDoc[], config: Confi
   const L: string[] = [];
   L.push('THIS SESSION');
   L.push(reportText(s));
+  if ((s.lifts || []).some((l) => l.circuit)) L.push('Lifts marked with a circuit were done back to back, one set of each per round, resting between rounds.');
   L.push('');
   L.push('EARLIER ENTRIES FOR THE SAME LIFTS, NEWEST FIRST');
   for (const l of s.lifts || []) {

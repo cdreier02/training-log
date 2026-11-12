@@ -102,6 +102,26 @@ h3 { margin: 0; font-size: 15px; line-height: 1.35; font-weight: 600; }
 .cell.add { border-style: dashed; color: var(--muted); font-size: 15px; font-weight: 500; }
 .cell.done .s { color: inherit; } .cell.now .s { color: inherit; font-weight: 600; }
 
+/* ---------- circuits ---------- */
+/* In a session: one row per lift for the round being done, in the same three states as a set cell. */
+.crows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.crow { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 54px; padding: 6px 12px; border: 1.5px solid var(--edge); border-radius: 4px; background: none; text-align: left; }
+.crow .n { min-width: 0; font-weight: 500; }
+.crow .v { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.crow .w { font-family: var(--cond); font-weight: 700; font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; }
+.crow .s { font-size: 12px; line-height: 15px; color: var(--muted); }
+.crow.done { background: var(--solid); color: var(--on-solid); border-color: var(--solid); }
+.crow.now { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.crow.done .s, .crow.now .s { color: inherit; } .crow.now .s { font-weight: 600; }
+.crow.skip { border-style: dashed; color: var(--muted); }
+.rows > li.clab { padding: 14px 0 2px; border-bottom: 0; font-size: 13px; line-height: 17px; font-weight: 600; color: var(--muted); }
+/* In the plan: a circuit is one block holding its lifts. */
+.rows > li.circ { margin: 8px -12px; padding: 0 12px 4px; border-bottom: 0; background: var(--sheet); border-radius: 10px; }
+.tog.pickrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 48px; padding: 6px 12px; text-align: left; border-color: var(--edge); font-size: 16px; }
+.tog.pickrow[aria-pressed="true"] { border-color: var(--solid); }
+.tog.pickrow .sub { font-size: 13px; opacity: .8; }
+.tog.pickrow .ord { flex: none; min-width: 1ch; font-size: 22px; line-height: 1; }
+
 /* ---------- rest timer ---------- */
 .rest { display: flex; flex-direction: column; gap: 6px; }
 .rest .line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

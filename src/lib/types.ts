@@ -37,10 +37,23 @@ export interface LiftDef {
   rest?: number;
 }
 
+/** Lifts done back to back, one set of each, then round again. */
+export interface Circuit {
+  id: string;
+  name: string;
+  rounds: number;
+  /** In the order they're done. Every one is also in the routine's liftIds. */
+  liftIds: string[];
+  /** Rest between rounds in seconds. Undefined follows the app-wide default; 0 turns it off. */
+  rest?: number;
+}
+
 export interface Routine {
   id: string;
   name: string;
+  /** Every lift in the routine, in order. Lifts in a circuit appear here too. */
   liftIds: string[];
+  circuits?: Circuit[];
 }
 
 export interface Prefs {
@@ -57,11 +70,23 @@ export interface SessionLift {
   repUnit: RepUnit;
   sets: SetRec[];
   note: string;
+  /** The name of the circuit this lift was done in, if it was. */
+  circuit?: string;
 }
 
 export interface ActiveLift extends SessionLift {
   plan: PlanSet[];
   skipped: boolean;
+  /** The id of the circuit (in the session's `circuits`) this lift belongs to. */
+  cid?: string;
+}
+
+/** A circuit as it stands in the session under way. Rounds can grow if one is added. */
+export interface ActiveCircuit {
+  id: string;
+  name: string;
+  rounds: number;
+  rest?: number;
 }
 
 /** `mi` holds the distance in whichever distance unit the person uses. */
@@ -100,6 +125,7 @@ export interface ActiveDoc extends DocBase {
   routineName: string;
   cur: number | null;
   lifts: ActiveLift[];
+  circuits?: ActiveCircuit[];
   run: Run | null;
   /** When the most recent set was logged. Drives the rest timer. */
   lastSetAt?: number;

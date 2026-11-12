@@ -4,7 +4,7 @@ import { useState } from 'preact/hooks';
 import { Sheet } from '../components/common';
 import { clock, isDateStr, longDate, todayStr } from '../lib/dates';
 import { paceLine, unitDLong, unitW } from '../lib/format';
-import { activeLift, liftSummary, parseWeights, planFor, sessionId, uid } from '../lib/logic';
+import { activeLift, liftSummary, parseWeights, planFor, sessionId, tidyRoutine, uid } from '../lib/logic';
 import { getActive, getConfig, getSessions, putSession, saveConfig, sessionById, updateActive, updateSession } from '../lib/store';
 import { KIND_LABEL } from '../lib/types';
 import type { Kind, LiftDef, RepUnit, Run, SessionDoc } from '../lib/types';
@@ -165,10 +165,16 @@ export function LiftSheet({ rt, id }: { rt: string; id: string }) {
     closeOverlay();
   };
   const removeFromRoutine = () => {
-    saveConfig((x) => { const r = x.routines.find((y) => y.id === rt); if (r) r.liftIds = r.liftIds.filter((y) => y !== id); });
+    saveConfig((x) => {
+      const r = x.routines.find((y) => y.id === rt);
+      if (!r) return;
+      r.liftIds = r.liftIds.filter((y) => y !== id);
+      tidyRoutine(r, x.lifts); // also takes it out of a circuit, and ends a circuit left with one lift
+    });
     closeOverlay();
   };
   const defaultRest = c.prefs.restSec;
+  const circuit = L ? routine?.circuits?.find((x) => x.liftIds.includes(L.id)) : undefined;
 
   return (
     <Sheet title={isNew ? 'New lift' : 'Edit lift'} sub={routine ? 'In ' + routine.name : undefined} backLabel="Back to plan">
@@ -217,6 +223,7 @@ export function LiftSheet({ rt, id }: { rt: string; id: string }) {
           <input id="f-reps" type="number" inputmode="numeric" min="1" value={f.reps} onInput={(e) => set({ reps: val(e) })} />
         </div>
       </div>
+      {circuit ? <p class="tiny muted" style="margin-top:6px">In this routine it’s part of {circuit.name}, which sets how many times it’s done ({circuit.rounds === 1 ? '1 round' : circuit.rounds + ' rounds'}). The sets here apply when it’s done on its own.</p> : null}
       <div class="two" style="gap:10px">
         <div class="field">
           <label for="f-unit">Count in</label>
